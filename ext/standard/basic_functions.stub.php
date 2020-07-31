@@ -296,14 +296,14 @@ function forward_static_call_array(callable $function, array $args): mixed {}
 /** @param callable $function */
 function register_shutdown_function($function, mixed ...$args): ?bool {}
 
-function highlight_file(string $filename, bool $return = false): string|bool|null {}
+function highlight_file(string $filename, bool $return = false): string|bool {}
 
 /** @alias highlight_file */
-function show_source(string $filename, bool $return = false): string|bool|null {}
+function show_source(string $filename, bool $return = false): string|bool {}
 
 function php_strip_whitespace(string $filename): string {}
 
-function highlight_string(string $string, bool $return = false): string|bool|null {}
+function highlight_string(string $string, bool $return = false): string|bool {}
 
 function ini_get(string $varname): string|false {}
 
@@ -508,7 +508,7 @@ function get_html_translation_table(int $table = HTML_SPECIALCHARS, int $quote_s
 /** @param mixed $assertion */
 function assert($assertion, $description = null): bool {}
 
-function assert_options(int $what, $value = UNKNOWN): array|object|int|string|bool|null {}
+function assert_options(int $what, $value = UNKNOWN): array|object|int|string|null {}
 
 /* string.c */
 
@@ -955,7 +955,7 @@ function http_build_query(array|object $data, string $numeric_prefix = "", $arg_
 
 function image_type_to_mime_type(int $image_type): string {}
 
-function image_type_to_extension(int $image_type): string|false {}
+function image_type_to_extension(int $image_type, bool $include_dot = true): string|false {}
 
 function getimagesize(string $image_path, &$image_info = null): array|false {}
 
@@ -1092,9 +1092,9 @@ function fdiv(float $dividend, float $divisor): float {}
 /* microtime.c */
 
 #ifdef HAVE_GETTIMEOFDAY
-function microtime(bool $get_as_float = false): string|float {}
+function microtime(bool $getAsFloat = false): string|float {}
 
-function gettimeofday(bool $return_float = false): array|float {}
+function gettimeofday(bool $returnFloat = false): array|float {}
 #endif
 
 #ifdef HAVE_GETRUSAGE
@@ -1314,7 +1314,7 @@ function stream_isatty($stream): bool {}
 
 #ifdef PHP_WIN32
 /** @param resource $stream */
-function sapi_windows_vt100_support($stream, bool $enable = UNKNOWN): bool {}
+function sapi_windows_vt100_support($stream, ?bool $enable = null): bool {}
 #endif
 
 /** @param resource $stream */
@@ -1337,7 +1337,7 @@ function gettype(mixed $var): string {}
 
 function get_debug_type(mixed $var): string {}
 
-function settype(&$var, string $type): bool {}
+function settype(mixed &$var, string $type): bool {}
 
 function intval(mixed $value, int $base = 10): int {}
 
@@ -1379,6 +1379,7 @@ function is_object(mixed $value): bool {}
 
 function is_scalar(mixed $value): bool {}
 
+/** @param string $callable_name */
 function is_callable(mixed $value, bool $syntax_only = false, &$callable_name = null): bool {}
 
 function is_iterable(mixed $value): bool {}

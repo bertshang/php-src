@@ -1,6 +1,27 @@
 PHP                                                                        NEWS
 |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-?? ??? ????, PHP 8.0.0alpha3
+?? ??? ????, PHP 8.0.0beta1
+
+- Core:
+  . Fixed bug #78236 (convert error on receiving variables when duplicate [).
+    (cmb)
+  . Fixed bug #79108 (Referencing argument in a function makes it a reference
+    in the stack trace). (Nikita)
+  . Fixed bug #79897 (Promoted constructor params with attribs cause crash).
+    (Deus Kane)
+
+- JIT:
+  . Fixed bug #79864 (JIT segfault in Symfony OptionsResolver). (Dmitry)
+  . Fixed bug #79888 (Incorrect execution with JIT enabled). (Dmitry)
+
+- LDAP:
+  . Fixed memory leaks. (ptomulik)
+
+- OCI8:
+  . Modernized oci_register_taf_callback() callable argument parsing
+    implementation. (girgias)
+
+23 Jul 2020, PHP 8.0.0alpha3
 
 - Core:
   . Fixed bug #79790 ("Illegal offset type" exception during AST evaluation
@@ -13,6 +34,11 @@ PHP                                                                        NEWS
     (Nikita)
   . Fixed bug #79852 (count(DOMNodeList) doesn't match
     count(IteratorIterator(DOMNodeList))). (Nikita)
+  . Fixed bug #79867 (Promoted untyped properties should get null default
+    value). (Nikita)
+
+- Standard:
+  . Fixed bug #79868 (Sorting with array_unique gives unwanted result). (Nikita)
 
 09 Jul 2020, PHP 8.0.0alpha2
 

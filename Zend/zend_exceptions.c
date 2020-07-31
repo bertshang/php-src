@@ -316,6 +316,8 @@ ZEND_METHOD(Exception, __construct)
 
 ZEND_METHOD(Exception, __wakeup)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
+
 	zval value, *pvalue;
 	zval *object = ZEND_THIS;
 	CHECK_EXC_TYPE(ZEND_STR_MESSAGE,  IS_STRING);
@@ -480,8 +482,8 @@ static void _build_trace_args(zval *arg, smart_str *str) /* {{{ */
 			break;
 		case IS_STRING:
 			smart_str_appendc(str, '\'');
-			smart_str_append_escaped(str, Z_STRVAL_P(arg), MIN(Z_STRLEN_P(arg), 15));
-			if (Z_STRLEN_P(arg) > 15) {
+			smart_str_append_escaped(str, Z_STRVAL_P(arg), MIN(Z_STRLEN_P(arg), EG(exception_string_param_max_len)));
+			if (Z_STRLEN_P(arg) > EG(exception_string_param_max_len)) {
 				smart_str_appends(str, "...', ");
 			} else {
 				smart_str_appends(str, "', ");
@@ -893,6 +895,7 @@ static void zend_error_va(int type, const char *file, uint32_t lineno, const cha
 	va_list args;
 	va_start(args, format);
 	zend_string *message = zend_vstrpprintf(0, format, args);
+	zend_error_notify_all_callbacks(type, file, lineno, message);
 	zend_error_cb(type, file, lineno, message);
 	zend_string_release(message);
 	va_end(args);
@@ -913,10 +916,10 @@ ZEND_API ZEND_COLD int zend_exception_error(zend_object *ex, int severity) /* {{
 		zend_string *message = zval_get_string(GET_PROPERTY(&exception, ZEND_STR_MESSAGE));
 		zend_string *file = zval_get_string(GET_PROPERTY_SILENT(&exception, ZEND_STR_FILE));
 		zend_long line = zval_get_long(GET_PROPERTY_SILENT(&exception, ZEND_STR_LINE));
+		int type = (ce_exception == zend_ce_parse_error ? E_PARSE : E_COMPILE_ERROR) | E_DONT_BAIL;
 
-		zend_error_cb(
-			(ce_exception == zend_ce_parse_error ? E_PARSE : E_COMPILE_ERROR) | E_DONT_BAIL,
-			ZSTR_VAL(file), line, message);
+		zend_error_notify_all_callbacks(type, ZSTR_VAL(file), line, message);
+		zend_error_cb(type, ZSTR_VAL(file), line, message);
 
 		zend_string_release_ex(file, 0);
 		zend_string_release_ex(message, 0);
@@ -995,7 +998,7 @@ ZEND_API ZEND_COLD void zend_throw_exception_object(zval *exception) /* {{{ */
 }
 /* }}} */
 
-ZEND_API ZEND_COLD void zend_throw_unwind_exit()
+ZEND_API ZEND_COLD void zend_throw_unwind_exit(void)
 {
 	ZEND_ASSERT(!EG(exception));
 	EG(exception) = zend_objects_new(&zend_ce_unwind_exit);

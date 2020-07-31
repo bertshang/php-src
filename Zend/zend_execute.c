@@ -127,16 +127,20 @@ static ZEND_FUNCTION(pass)
 {
 }
 
+ZEND_BEGIN_ARG_INFO_EX(zend_pass_function_arg_info, 0, 0, 0)
+	ZEND_ARG_VARIADIC_INFO(0, args)
+ZEND_END_ARG_INFO()
+
 ZEND_API const zend_internal_function zend_pass_function = {
 	ZEND_INTERNAL_FUNCTION, /* type              */
 	{0, 0, 0},              /* arg_flags         */
-	0,                      /* fn_flags          */
+	ZEND_ACC_VARIADIC,      /* fn_flags          */
 	NULL,                   /* name              */
 	NULL,                   /* scope             */
 	NULL,                   /* prototype         */
 	0,                      /* num_args          */
 	0,                      /* required_num_args */
-	NULL,                   /* arg_info          */
+	(zend_internal_arg_info *) zend_pass_function_arg_info + 1, /* arg_info */
 	NULL,                   /* attributes        */
 	ZEND_FN(pass),          /* handler           */
 	NULL,                   /* module            */
@@ -724,7 +728,7 @@ static zend_bool zend_verify_weak_scalar_type_hint(uint32_t type_mask, zval *arg
 		/* For an int|float union type and string value,
 		 * determine chosen type by is_numeric_string() semantics. */
 		if ((type_mask & MAY_BE_DOUBLE) && Z_TYPE_P(arg) == IS_STRING) {
-			zend_uchar type = is_numeric_string(Z_STRVAL_P(arg), Z_STRLEN_P(arg), &lval, &dval, -1);
+			zend_uchar type = is_numeric_str_function(Z_STR_P(arg), &lval, &dval);
 			if (type == IS_LONG) {
 				zend_string_release(Z_STR_P(arg));
 				ZVAL_LONG(arg, lval);
@@ -766,35 +770,11 @@ static zend_bool zend_verify_weak_scalar_type_hint_no_sideeffect(uint32_t type_m
 	double dval;
 	zend_bool bval;
 
-	if (type_mask & MAY_BE_LONG) {
-		if (Z_TYPE_P(arg) == IS_STRING) {
-			/* Handle this case separately to avoid the "non well-formed" warning */
-			zend_uchar type = is_numeric_string(Z_STRVAL_P(arg), Z_STRLEN_P(arg), NULL, &dval, 1);
-			if (type == IS_LONG) {
-				return 1;
-			}
-			if (type == IS_DOUBLE) {
-				if ((type_mask & MAY_BE_DOUBLE)
-						|| (!zend_isnan(dval) && ZEND_DOUBLE_FITS_LONG(dval))) {
-					return 1;
-				}
-
-			}
-		}
-		if (zend_parse_arg_long_weak(arg, &lval)) {
-			return 1;
-		}
+	if ((type_mask & MAY_BE_LONG) && zend_parse_arg_long_weak(arg, &lval)) {
+		return 1;
 	}
-	if (type_mask & MAY_BE_DOUBLE) {
-		if (Z_TYPE_P(arg) == IS_STRING) {
-			/* Handle this case separately to avoid the "non well-formed" warning */
-			if (is_numeric_string(Z_STRVAL_P(arg), Z_STRLEN_P(arg), NULL, NULL, 1) != 0) {
-				return 1;
-			}
-		}
-		if (zend_parse_arg_double_weak(arg, &dval)) {
-			return 1;
-		}
+	if ((type_mask & MAY_BE_DOUBLE) && zend_parse_arg_double_weak(arg, &dval)) {
+		return 1;
 	}
 	/* We don't call cast_object here, because this check must be side-effect free. As this
 	 * is only used for a sanity check of arginfo/zpp consistency, it's okay if we accept
@@ -1122,6 +1102,14 @@ static zend_never_inline ZEND_ATTRIBUTE_UNUSED int zend_verify_internal_arg_type
 static zend_always_inline zend_bool zend_internal_call_should_throw(zend_function *fbc, zend_execute_data *call)
 {
 	if (fbc->common.required_num_args > ZEND_CALL_NUM_ARGS(call)) {
+		/* Required argument not passed. */
+		return 1;
+	}
+
+	if (fbc->common.num_args < ZEND_CALL_NUM_ARGS(call)
+			&& !(fbc->common.fn_flags & ZEND_ACC_VARIADIC)) {
+		/* Too many arguments passed. For internal functions (unlike userland functions),
+		 * this should always throw. */
 		return 1;
 	}
 
@@ -1259,6 +1247,11 @@ static zend_never_inline ZEND_COLD void ZEND_FASTCALL zend_illegal_offset(void)
 	zend_type_error("Illegal offset type");
 }
 
+static zend_never_inline ZEND_COLD void ZEND_FASTCALL zend_illegal_string_offset(const zval *offset)
+{
+	zend_type_error("Cannot access offset of type %s on string", zend_zval_type_name(offset));
+}
+
 static zend_never_inline void zend_assign_to_object_dim(zval *object, zval *dim, zval *value OPLINE_DC EXECUTE_DATA_DC)
 {
 	Z_OBJ_HT_P(object)->write_dimension(Z_OBJ_P(object), dim, value);
@@ -1352,13 +1345,19 @@ try_again:
 	if (UNEXPECTED(Z_TYPE_P(dim) != IS_LONG)) {
 		switch(Z_TYPE_P(dim)) {
 			case IS_STRING:
-				if (IS_LONG == is_numeric_string(Z_STRVAL_P(dim), Z_STRLEN_P(dim), NULL, NULL, -1)) {
-					break;
+			{
+				bool trailing_data = false;
+				/* For BC reasons we allow errors so that we can warn on leading numeric string */
+				if (IS_LONG == is_numeric_string_ex(Z_STRVAL_P(dim), Z_STRLEN_P(dim), &offset, NULL,
+						/* allow errors */ true, NULL, &trailing_data)) {
+					if (UNEXPECTED(trailing_data) && type != BP_VAR_UNSET) {
+						zend_error(E_WARNING, "Illegal string offset \"%s\"", Z_STRVAL_P(dim));
+					}
+					return offset;
 				}
-				if (type != BP_VAR_UNSET) {
-					zend_error(E_WARNING, "Illegal string offset \"%s\"", Z_STRVAL_P(dim));
-				}
+				zend_illegal_string_offset(dim);
 				break;
+			}
 			case IS_UNDEF:
 				ZVAL_UNDEFINED_OP2();
 			case IS_DOUBLE:
@@ -1371,7 +1370,7 @@ try_again:
 				dim = Z_REFVAL_P(dim);
 				goto try_again;
 			default:
-				zend_illegal_offset();
+				zend_illegal_string_offset(dim);
 				break;
 		}
 
@@ -2337,17 +2336,24 @@ try_array:
 try_string_offset:
 		if (UNEXPECTED(Z_TYPE_P(dim) != IS_LONG)) {
 			switch (Z_TYPE_P(dim)) {
-				/* case IS_LONG: */
 				case IS_STRING:
-					if (IS_LONG == is_numeric_string(Z_STRVAL_P(dim), Z_STRLEN_P(dim), NULL, NULL, -1)) {
-						break;
+				{
+					bool trailing_data = false;
+					/* For BC reasons we allow errors so that we can warn on leading numeric string */
+					if (IS_LONG == is_numeric_string_ex(Z_STRVAL_P(dim), Z_STRLEN_P(dim), &offset,
+							NULL, /* allow errors */ true, NULL, &trailing_data)) {
+						if (UNEXPECTED(trailing_data)) {
+							zend_error(E_WARNING, "Illegal string offset \"%s\"", Z_STRVAL_P(dim));
+						}
+						goto out;
 					}
 					if (type == BP_VAR_IS) {
 						ZVAL_NULL(result);
 						return;
 					}
-					zend_error(E_WARNING, "Illegal string offset \"%s\"", Z_STRVAL_P(dim));
+					zend_illegal_string_offset(dim);
 					break;
+				}
 				case IS_UNDEF:
 					ZVAL_UNDEFINED_OP2();
 				case IS_DOUBLE:
@@ -2362,7 +2368,7 @@ try_string_offset:
 					dim = Z_REFVAL_P(dim);
 					goto try_string_offset;
 				default:
-					zend_illegal_offset();
+					zend_illegal_string_offset(dim);
 					break;
 			}
 
@@ -2370,6 +2376,7 @@ try_string_offset:
 		} else {
 			offset = Z_LVAL_P(dim);
 		}
+		out:
 
 		if (UNEXPECTED(Z_STRLEN_P(container) < ((offset < 0) ? -(size_t)offset : ((size_t)offset + 1)))) {
 			if (type != BP_VAR_IS) {

@@ -111,13 +111,6 @@ static inline HashTable *spl_array_get_hash_table(spl_array_object* intern) { /*
 }
 /* }}} */
 
-static inline void spl_array_replace_hash_table(spl_array_object* intern, HashTable *ht) { /* {{{ */
-	HashTable **ht_ptr = spl_array_get_hash_table_ptr(intern);
-	zend_array_destroy(*ht_ptr);
-	*ht_ptr = ht;
-}
-/* }}} */
-
 static inline zend_bool spl_array_is_object(spl_array_object *intern) /* {{{ */
 {
 	while (intern->ar_flags & SPL_ARRAY_USE_OTHER) {
@@ -1412,7 +1405,8 @@ PHP_METHOD(ArrayObject, count)
 static void spl_array_method(INTERNAL_FUNCTION_PARAMETERS, char *fname, int fname_len, int use_arg) /* {{{ */
 {
 	spl_array_object *intern = Z_SPLARRAY_P(ZEND_THIS);
-	HashTable *aht = spl_array_get_hash_table(intern);
+	HashTable **ht_ptr = spl_array_get_hash_table_ptr(intern);
+	HashTable *aht = *ht_ptr;
 	zval function_name, params[2], *arg = NULL;
 
 	ZVAL_STRINGL(&function_name, fname, fname_len);
@@ -1422,12 +1416,15 @@ static void spl_array_method(INTERNAL_FUNCTION_PARAMETERS, char *fname, int fnam
 	GC_ADDREF(aht);
 
 	if (!use_arg) {
+		if (zend_parse_parameters_none() == FAILURE) {
+			goto exit;
+		}
+
 		intern->nApplyCount++;
 		call_user_function(EG(function_table), NULL, &function_name, return_value, 1, params);
 		intern->nApplyCount--;
 	} else if (use_arg == SPL_ARRAY_METHOD_MAY_USER_ARG) {
-		if (zend_parse_parameters_ex(ZEND_PARSE_PARAMS_QUIET, ZEND_NUM_ARGS(), "|z", &arg) == FAILURE) {
-			zend_throw_exception(spl_ce_BadMethodCallException, "Function expects one argument at most", 0);
+		if (zend_parse_parameters(ZEND_NUM_ARGS(), "|z", &arg) == FAILURE) {
 			goto exit;
 		}
 		if (arg) {
@@ -1437,8 +1434,7 @@ static void spl_array_method(INTERNAL_FUNCTION_PARAMETERS, char *fname, int fnam
 		call_user_function(EG(function_table), NULL, &function_name, return_value, arg ? 2 : 1, params);
 		intern->nApplyCount--;
 	} else {
-		if (ZEND_NUM_ARGS() != 1 || zend_parse_parameters_ex(ZEND_PARSE_PARAMS_QUIET, ZEND_NUM_ARGS(), "z", &arg) == FAILURE) {
-			zend_throw_exception(spl_ce_BadMethodCallException, "Function expects exactly one argument", 0);
+		if (zend_parse_parameters(ZEND_NUM_ARGS(), "z", &arg) == FAILURE) {
 			goto exit;
 		}
 		ZVAL_COPY_VALUE(&params[1], arg);
@@ -1449,13 +1445,11 @@ static void spl_array_method(INTERNAL_FUNCTION_PARAMETERS, char *fname, int fnam
 
 exit:
 	{
-		HashTable *new_ht = Z_ARRVAL_P(Z_REFVAL(params[0]));
-		if (aht != new_ht) {
-			spl_array_replace_hash_table(intern, new_ht);
-		} else {
-			GC_DELREF(aht);
-		}
-		ZVAL_NULL(Z_REFVAL(params[0]));
+		zval *ht_zv = Z_REFVAL(params[0]);
+		zend_array_release(*ht_ptr);
+		SEPARATE_ARRAY(ht_zv);
+		*ht_ptr = Z_ARRVAL_P(ht_zv);
+		ZVAL_NULL(ht_zv);
 		zval_ptr_dtor(&params[0]);
 		zend_string_free(Z_STR(function_name));
 	}

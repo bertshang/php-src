@@ -27,6 +27,12 @@ static ZEND_COLD void undef_result_after_exception() {
 	}
 }
 
+static ZEND_COLD void zend_jit_illegal_string_offset(zval *offset)
+{
+	zend_type_error("Cannot access offset of type %s on string", zend_zval_type_name(offset));
+}
+
+
 static zend_never_inline zend_function* ZEND_FASTCALL _zend_jit_init_func_run_time_cache(const zend_op_array *op_array) /* {{{ */
 {
 	void **run_time_cache;
@@ -350,8 +356,8 @@ static void ZEND_FASTCALL zend_jit_fetch_dim_r_helper(zend_array *ht, zval *dim,
 			hval = 1;
 			goto num_index;
 		default:
-			zend_type_error("Illegal offset type");
-			ZVAL_NULL(result);
+			zend_jit_illegal_string_offset(dim);
+			undef_result_after_exception();
 			return;
 	}
 
@@ -422,8 +428,8 @@ static void ZEND_FASTCALL zend_jit_fetch_dim_is_helper(zend_array *ht, zval *dim
 			hval = 1;
 			goto num_index;
 		default:
-			zend_type_error("Illegal offset type");
-			ZVAL_NULL(result);
+			zend_jit_illegal_string_offset(dim);
+			undef_result_after_exception();
 			return;
 	}
 
@@ -560,7 +566,7 @@ static zval* ZEND_FASTCALL zend_jit_fetch_dim_rw_helper(zend_array *ht, zval *di
 			hval = 1;
 			goto num_index;
 		default:
-			zend_type_error("Illegal offset type");
+			zend_jit_illegal_string_offset(dim);
 			undef_result_after_exception();
 			return NULL;
 	}
@@ -641,7 +647,7 @@ static zval* ZEND_FASTCALL zend_jit_fetch_dim_w_helper(zend_array *ht, zval *dim
 			hval = 1;
 			goto num_index;
 		default:
-			zend_type_error("Illegal offset type");
+			zend_jit_illegal_string_offset(dim);
 			undef_result_after_exception();
 			return NULL;
 	}
@@ -670,37 +676,53 @@ num_undef:
 	return retval;
 }
 
+static zend_never_inline zend_long zend_check_string_offset(zval *dim/*, int type*/)
+{
+	zend_long offset;
+
+try_again:
+	switch(Z_TYPE_P(dim)) {
+		case IS_LONG:
+			return Z_LVAL_P(dim);
+		case IS_STRING:
+		{
+			bool trailing_data = false;
+			/* For BC reasons we allow errors so that we can warn on leading numeric string */
+			if (IS_LONG == is_numeric_string_ex(Z_STRVAL_P(dim), Z_STRLEN_P(dim), &offset, NULL,
+					/* allow errors */ true, NULL, &trailing_data)) {
+				if (UNEXPECTED(trailing_data) /*&& type != BP_VAR_UNSET*/) {
+					zend_error(E_WARNING, "Illegal string offset \"%s\"", Z_STRVAL_P(dim));
+				}
+				return offset;
+			}
+			zend_jit_illegal_string_offset(dim);
+			break;
+		}
+		case IS_UNDEF:
+			zend_jit_undefined_op_helper(EG(current_execute_data)->opline->op2.var);
+		case IS_DOUBLE:
+		case IS_NULL:
+		case IS_FALSE:
+		case IS_TRUE:
+			zend_error(E_WARNING, "String offset cast occurred");
+			break;
+		case IS_REFERENCE:
+			dim = Z_REFVAL_P(dim);
+			goto try_again;
+		default:
+			zend_jit_illegal_string_offset(dim);
+			break;
+	}
+
+	return _zval_get_long_func(dim);
+}
+
 static void ZEND_FASTCALL zend_jit_fetch_dim_str_r_helper(zval *container, zval *dim, zval *result)
 {
 	zend_long offset;
 
-try_string_offset:
 	if (UNEXPECTED(Z_TYPE_P(dim) != IS_LONG)) {
-		switch (Z_TYPE_P(dim)) {
-			/* case IS_LONG: */
-			case IS_STRING:
-				if (IS_LONG == is_numeric_string(Z_STRVAL_P(dim), Z_STRLEN_P(dim), NULL, NULL, -1)) {
-					break;
-				}
-				zend_error(E_WARNING, "Illegal string offset \"%s\"", Z_STRVAL_P(dim));
-				break;
-			case IS_UNDEF:
-				zend_jit_undefined_op_helper(EG(current_execute_data)->opline->op2.var);
-			case IS_DOUBLE:
-			case IS_NULL:
-			case IS_FALSE:
-			case IS_TRUE:
-				zend_error(E_WARNING, "String offset cast occurred");
-				break;
-			case IS_REFERENCE:
-				dim = Z_REFVAL_P(dim);
-				goto try_string_offset;
-			default:
-				zend_type_error("Illegal offset type");
-				break;
-		}
-
-		offset = _zval_get_long_func(dim);
+		offset = zend_check_string_offset(dim/*, BP_VAR_R*/);
 	} else {
 		offset = Z_LVAL_P(dim);
 	}
@@ -728,7 +750,7 @@ try_string_offset:
 		switch (Z_TYPE_P(dim)) {
 			/* case IS_LONG: */
 			case IS_STRING:
-				if (IS_LONG == is_numeric_string(Z_STRVAL_P(dim), Z_STRLEN_P(dim), NULL, NULL, -1)) {
+				if (IS_LONG == is_numeric_string(Z_STRVAL_P(dim), Z_STRLEN_P(dim), NULL, NULL, false)) {
 					break;
 				}
 				ZVAL_NULL(result);
@@ -744,7 +766,7 @@ try_string_offset:
 				dim = Z_REFVAL_P(dim);
 				goto try_string_offset;
 			default:
-				zend_type_error("Illegal offset type");
+				zend_jit_illegal_string_offset(dim);
 				break;
 		}
 
@@ -808,51 +830,6 @@ static void ZEND_FASTCALL zend_jit_fetch_dim_obj_is_helper(zval *container, zval
 	} else {
 		ZVAL_NULL(result);
 	}
-}
-
-static zval* ZEND_FASTCALL zend_jit_fetch_dimension_rw_long_helper(HashTable *ht, zend_long hval)
-{
-	zend_error(E_NOTICE,"Undefined array key " ZEND_LONG_FMT, hval);
-	return zend_hash_index_update(ht, hval, &EG(uninitialized_zval));
-}
-
-static zend_never_inline zend_long zend_check_string_offset(zval *dim, int type)
-{
-	zend_long offset;
-
-try_again:
-	if (UNEXPECTED(Z_TYPE_P(dim) != IS_LONG)) {
-		switch(Z_TYPE_P(dim)) {
-			case IS_STRING:
-				if (IS_LONG == is_numeric_string(Z_STRVAL_P(dim), Z_STRLEN_P(dim), NULL, NULL, -1)) {
-					break;
-				}
-				if (type != BP_VAR_UNSET) {
-					zend_error(E_WARNING, "Illegal string offset \"%s\"", Z_STRVAL_P(dim));
-				}
-				break;
-			case IS_UNDEF:
-				zend_jit_undefined_op_helper(EG(current_execute_data)->opline->op2.var);
-			case IS_DOUBLE:
-			case IS_NULL:
-			case IS_FALSE:
-			case IS_TRUE:
-				zend_error(E_WARNING, "String offset cast occurred");
-				break;
-			case IS_REFERENCE:
-				dim = Z_REFVAL_P(dim);
-				goto try_again;
-			default:
-				zend_type_error("Illegal offset type");
-				break;
-		}
-
-		offset = _zval_get_long_func(dim);
-	} else {
-		offset = Z_LVAL_P(dim);
-	}
-
-	return offset;
 }
 
 static zend_never_inline ZEND_COLD void zend_wrong_string_offset(void)
@@ -961,7 +938,11 @@ static zend_never_inline void zend_assign_to_string_offset(zval *str, zval *dim,
 	size_t string_len;
 	zend_long offset;
 
-	offset = zend_check_string_offset(dim, BP_VAR_W);
+	if (UNEXPECTED(Z_TYPE_P(dim) != IS_LONG)) {
+		offset = zend_check_string_offset(dim/*, BP_VAR_W*/);
+	} else {
+		offset = Z_LVAL_P(dim);
+	}
 	if (offset < -(zend_long)Z_STRLEN_P(str)) {
 		/* Error on negative offset */
 		zend_error(E_WARNING, "Illegal string offset " ZEND_LONG_FMT, offset);
@@ -1094,7 +1075,9 @@ static void ZEND_FASTCALL zend_jit_assign_dim_op_helper(zval *container, zval *d
 			if (!dim) {
 				zend_throw_error(NULL, "[] operator not supported for strings");
 			} else {
-				zend_check_string_offset(dim, BP_VAR_RW);
+				if (UNEXPECTED(Z_TYPE_P(dim) != IS_LONG)) {
+					zend_check_string_offset(dim/*, BP_VAR_RW*/);
+				}
 				zend_wrong_string_offset();
 			}
 //???		} else if (EXPECTED(Z_TYPE_P(container) <= IS_FALSE)) {
@@ -1179,7 +1162,7 @@ isset_str_offset:
 			ZVAL_DEREF(offset);
 			if (Z_TYPE_P(offset) < IS_STRING /* simple scalar types */
 					|| (Z_TYPE_P(offset) == IS_STRING /* or numeric string */
-						&& IS_LONG == is_numeric_string(Z_STRVAL_P(offset), Z_STRLEN_P(offset), NULL, NULL, 0))) {
+						&& IS_LONG == is_numeric_string(Z_STRVAL_P(offset), Z_STRLEN_P(offset), NULL, NULL, false))) {
 				lval = zval_get_long(offset);
 				goto isset_str_offset;
 			}
@@ -1632,7 +1615,7 @@ static void ZEND_FASTCALL zend_jit_vm_stack_free_args_helper(zend_execute_data *
 	zend_vm_stack_free_args(call);
 }
 
-static zend_always_inline void zend_jit_assign_to_typed_ref(zend_reference *ref, zval *value, zend_uchar value_type)
+static zend_always_inline void zend_jit_assign_to_typed_ref_helper(zend_reference *ref, zval *value, zend_uchar value_type)
 {
 	zval variable;
 
@@ -1642,22 +1625,22 @@ static zend_always_inline void zend_jit_assign_to_typed_ref(zend_reference *ref,
 
 static void ZEND_FASTCALL zend_jit_assign_const_to_typed_ref(zend_reference *ref, zval *value)
 {
-	zend_jit_assign_to_typed_ref(ref, value, IS_CONST);
+	zend_jit_assign_to_typed_ref_helper(ref, value, IS_CONST);
 }
 
 static void ZEND_FASTCALL zend_jit_assign_tmp_to_typed_ref(zend_reference *ref, zval *value)
 {
-	zend_jit_assign_to_typed_ref(ref, value, IS_TMP_VAR);
+	zend_jit_assign_to_typed_ref_helper(ref, value, IS_TMP_VAR);
 }
 
 static void ZEND_FASTCALL zend_jit_assign_var_to_typed_ref(zend_reference *ref, zval *value)
 {
-	zend_jit_assign_to_typed_ref(ref, value, IS_VAR);
+	zend_jit_assign_to_typed_ref_helper(ref, value, IS_VAR);
 }
 
 static void ZEND_FASTCALL zend_jit_assign_cv_to_typed_ref(zend_reference *ref, zval *value)
 {
-	zend_jit_assign_to_typed_ref(ref, value, IS_CV);
+	zend_jit_assign_to_typed_ref_helper(ref, value, IS_CV);
 }
 
 
